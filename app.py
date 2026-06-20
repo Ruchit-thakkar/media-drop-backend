@@ -1,6 +1,9 @@
 from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
 import os
+import uuid
+import shutil
+import time
 # Importing your functions directly from downloader.py
 from downloader import extract, download
 
@@ -9,6 +12,22 @@ CORS(app) # Allows communication from your front-end
 
 # Temporary directory on the cloud instance to store downloaded files
 DOWNLOAD_DIR = "/tmp/mediadrop_downloads"
+
+def cleanup_old_downloads(directory, max_age_seconds=1800):
+    """Deletes subdirectories in the download path that are older than max_age_seconds."""
+    if not os.path.exists(directory):
+        return
+    try:
+        now = time.time()
+        for item in os.listdir(directory):
+            item_path = os.path.join(directory, item)
+            if os.path.isdir(item_path):
+                # Check modification time
+                mtime = os.path.getmtime(item_path)
+                if now - mtime > max_age_seconds:
+                    shutil.rmtree(item_path)
+    except Exception as e:
+        app.logger.error(f"Error cleaning up old downloads: {e}")
 
 @app.route('/wake-up', methods=['GET'])
 def wake_up():
@@ -30,6 +49,9 @@ def api_extract():
 @app.route('/api/download', methods=['POST'])
 def api_download():
     """Handles the media processing and sends the finished file back to front-end"""
+    # Clean up old files to prevent disk usage from growing
+    cleanup_old_downloads(DOWNLOAD_DIR)
+
     data = request.json
     url = data.get('url')
     format_id = data.get('format')
@@ -37,8 +59,12 @@ def api_download():
     if not url or not format_id:
         return jsonify({"success": False, "error": "URL and Format ID are required"}), 400
         
+    # Create a unique isolated subdirectory for this download request
+    request_id = str(uuid.uuid4())
+    download_subdir = os.path.join(DOWNLOAD_DIR, request_id)
+
     # Triggering your download function
-    result = download(url, format_id, DOWNLOAD_DIR)
+    result = download(url, format_id, download_subdir)
     
     if result.get("success"):
         filepath = result.get("filepath")

@@ -32,16 +32,77 @@ def format_duration(d):
     else:
         return f"{minutes}:{secs:02d}"
 
+def get_format_size(f, duration=None):
+    if not f:
+        return None
+    if f.get('filesize'):
+        return f['filesize']
+    if f.get('filesize_approx'):
+        return f['filesize_approx']
+    if duration and f.get('tbr'):
+        return int(duration * f['tbr'] * 1000 / 8)
+    return None
+
 def get_media_formats(media_info, platform):
+    duration = media_info.get('duration')
+    info_formats = media_info.get('formats', [])
+    
+    # Find best audio-only size to add to video size for video-only formats
+    audio_formats = [f for f in info_formats if f.get('vcodec') == 'none' and f.get('acodec') != 'none']
+    best_audio = None
+    if audio_formats:
+        audio_formats.sort(key=lambda x: x.get('abr') or x.get('tbr') or 0, reverse=True)
+        best_audio = audio_formats[0]
+    best_audio_size = get_format_size(best_audio, duration) if best_audio else 0
+
+    def estimate_video_size(target_height):
+        # Find video format closest or equal to target_height
+        v_formats = [f for f in info_formats if f.get('height') == target_height and f.get('vcodec') != 'none']
+        if not v_formats:
+            v_formats = [f for f in info_formats if f.get('vcodec') != 'none']
+            if not v_formats:
+                return None
+            v_formats.sort(key=lambda x: abs((x.get('height') or 0) - target_height))
+        # Prefer progressive (vcodec != 'none' and acodec != 'none')
+        v_formats.sort(key=lambda x: (x.get('acodec') != 'none', x.get('tbr') or 0), reverse=True)
+        best_f = v_formats[0]
+        vid_size = get_format_size(best_f, duration)
+        if vid_size:
+            if best_f.get('acodec') != 'none':
+                return vid_size
+            else:
+                return vid_size + (best_audio_size or 0)
+        return None
+
+    def estimate_hq_video_size():
+        # Find best progressive or video+audio format size
+        v_formats = [f for f in info_formats if f.get('vcodec') != 'none']
+        if not v_formats:
+            return None
+        v_formats.sort(key=lambda x: (x.get('acodec') != 'none', x.get('height') or 0, x.get('tbr') or 0), reverse=True)
+        best_f = v_formats[0]
+        vid_size = get_format_size(best_f, duration)
+        if vid_size:
+            if best_f.get('acodec') != 'none':
+                return vid_size
+            else:
+                return vid_size + (best_audio_size or 0)
+        return None
+
+    def estimate_audio_size(bitrate_kbps):
+        if duration:
+            return int(duration * bitrate_kbps * 1000 / 8)
+        return best_audio_size if best_audio_size else None
+
     formats = []
     
     # 1. Video formats
     if platform == 'youtube':
         formats.extend([
-            {"id": "1080p", "name": "1080p Full HD", "type": "video", "ext": "mp4", "quality": "1080p", "note": "Best quality"},
-            {"id": "720p", "name": "720p HD", "type": "video", "ext": "mp4", "quality": "720p", "note": "Fast download"},
-            {"id": "480p", "name": "480p SD", "type": "video", "ext": "mp4", "quality": "480p", "note": "Standard quality"},
-            {"id": "360p", "name": "360p", "type": "video", "ext": "mp4", "quality": "360p", "note": "Low data"}
+            {"id": "1080p", "name": "1080p Full HD", "type": "video", "ext": "mp4", "quality": "1080p", "note": "Best quality", "filesize": estimate_video_size(1080)},
+            {"id": "720p", "name": "720p HD", "type": "video", "ext": "mp4", "quality": "720p", "note": "Fast download", "filesize": estimate_video_size(720)},
+            {"id": "480p", "name": "480p SD", "type": "video", "ext": "mp4", "quality": "480p", "note": "Standard quality", "filesize": estimate_video_size(480)},
+            {"id": "360p", "name": "360p", "type": "video", "ext": "mp4", "quality": "360p", "note": "Low data", "filesize": estimate_video_size(360)}
         ])
     else:
         formats.append({
@@ -50,13 +111,14 @@ def get_media_formats(media_info, platform):
             "type": "video",
             "ext": "mp4",
             "quality": "HD/Source",
-            "note": "Original source quality"
+            "note": "Original source quality",
+            "filesize": estimate_hq_video_size()
         })
         
     # 2. Audio formats (MP3 conversion)
     formats.extend([
-        {"id": "mp3-320", "name": "320kbps HQ Audio", "type": "audio", "ext": "mp3", "quality": "320kbps", "note": "Studio quality MP3"},
-        {"id": "mp3-128", "name": "128kbps Audio", "type": "audio", "ext": "mp3", "quality": "128kbps", "note": "Standard quality MP3"}
+        {"id": "mp3-320", "name": "320kbps HQ Audio", "type": "audio", "ext": "mp3", "quality": "320kbps", "note": "Studio quality MP3", "filesize": estimate_audio_size(320)},
+        {"id": "mp3-128", "name": "128kbps Audio", "type": "audio", "ext": "mp3", "quality": "128kbps", "note": "Standard quality MP3", "filesize": estimate_audio_size(128)}
     ])
     
     # 3. Thumbnail/Photo format
@@ -66,7 +128,8 @@ def get_media_formats(media_info, platform):
         "type": "image",
         "ext": "jpg",
         "quality": "Original",
-        "note": "Cover image"
+        "note": "Cover image",
+        "filesize": 153600
     })
     
     return formats
@@ -238,16 +301,16 @@ def download(url, format_id, output_dir):
     
     # Configure options based on format_id
     if format_id == '1080p':
-        ydl_opts['format'] = 'bestvideo[height<=1080]+bestaudio/best[height<=1080]'
+        ydl_opts['format'] = 'bestvideo[height<=1080]+bestaudio/best'
         ydl_opts['merge_output_format'] = 'mp4'
     elif format_id == '720p':
-        ydl_opts['format'] = 'bestvideo[height<=720]+bestaudio/best[height<=720]'
+        ydl_opts['format'] = 'bestvideo[height<=720]+bestaudio/best'
         ydl_opts['merge_output_format'] = 'mp4'
     elif format_id == '480p':
-        ydl_opts['format'] = 'bestvideo[height<=480]+bestaudio/best[height<=480]'
+        ydl_opts['format'] = 'bestvideo[height<=480]+bestaudio/best'
         ydl_opts['merge_output_format'] = 'mp4'
     elif format_id == '360p':
-        ydl_opts['format'] = 'bestvideo[height<=360]+bestaudio/best[height<=360]'
+        ydl_opts['format'] = 'bestvideo[height<=360]+bestaudio/best'
         ydl_opts['merge_output_format'] = 'mp4'
     elif format_id == 'hq-video':
         ydl_opts['format'] = 'bestvideo+bestaudio/best'
