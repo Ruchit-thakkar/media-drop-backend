@@ -8,7 +8,7 @@ import time
 from downloader import extract, download
 
 app = Flask(__name__)
-CORS(app) # Allows communication from your front-end
+CORS(app, origins=["https://media-drop.netlify.app", "http://localhost:3000", "http://127.0.0.1:3000"]) # Allows communication from frontend
 
 # Temporary directory on the cloud instance to store downloaded files
 DOWNLOAD_DIR = "/tmp/mediadrop_downloads"

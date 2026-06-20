@@ -3,6 +3,7 @@ import json
 import argparse
 import os
 import urllib.request
+import re
 import yt_dlp
 
 class MyLogger:
@@ -31,6 +32,22 @@ def format_duration(d):
         return f"{hours}:{minutes:02d}:{secs:02d}"
     else:
         return f"{minutes}:{secs:02d}"
+
+def fetch_channel_avatar(channel_url):
+    if not channel_url:
+        return None
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        req = urllib.request.Request(channel_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=5) as response:
+            html = response.read().decode('utf-8', errors='ignore')
+            # Look for og:image
+            match = re.search(r'<meta property="og:image" content="([^"]+)"', html)
+            if match:
+                return match.group(1)
+    except Exception as e:
+        sys.stderr.write(f"Error fetching channel avatar: {e}\n")
+    return None
 
 def get_format_size(f, duration=None):
     if not f:
@@ -183,6 +200,9 @@ def extract(url):
                 
         is_playlist = info.get('_type') == 'playlist'
         
+        channel_url = info.get("channel_url") or info.get("uploader_url")
+        uploader_avatar = fetch_channel_avatar(channel_url)
+        
         if is_playlist:
             # Handle playlist (e.g. carousel)
             entries = []
@@ -208,6 +228,7 @@ def extract(url):
                 "is_playlist": True,
                 "title": info.get("title") or "Album / Playlist",
                 "uploader": info.get("uploader") or info.get("channel") or "Unknown",
+                "uploader_avatar": uploader_avatar,
                 "platform": extractor,
                 "thumbnail": info.get("thumbnail"),
                 "description": info.get("description") or "",
@@ -240,6 +261,7 @@ def extract(url):
                 "thumbnail": info.get("thumbnail"),
                 "duration": format_duration(info.get("duration")),
                 "uploader": info.get("uploader") or info.get("channel") or "Unknown",
+                "uploader_avatar": uploader_avatar,
                 "platform": extractor,
                 "description": info.get("description") or "",
                 "formats": get_media_formats(info, extractor),
